@@ -17,6 +17,14 @@ By example:
 
 Run `disable-keys.exe --list-keys` to get a list of key names
 
+### Re-enabling Keys
+
+To re-enable the disabled keys, simply terminate the program:
+- Close the terminal window where disable-keys is running
+- Press `Ctrl+C` in the terminal to stop the program
+
+The keys will be automatically re-enabled as soon as the program exits.
+
 ### To run yourself
 
 1. [Install rust](https://learn.microsoft.com/en-us/windows/dev-environment/rust/setup)
