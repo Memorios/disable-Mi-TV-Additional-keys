@@ -29,5 +29,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: disable-keys-windows
-          path: target/release/disable-keys.exe
+          name: disable-Mi-TV-Additional-keys-windows
+          path: target/release/disable-Mi-TV-Additional-keys.exe
