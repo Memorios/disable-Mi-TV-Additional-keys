@@ -1,12 +1,10 @@
 [package]
-name = "disable-keys"
+name = "disable-mi-tv-additional-keys"
 version = "0.1.0"
 edition = "2021"
+authors = ["Memorios"]
+description = "Disable unwanted Xiaomi Mi TV keyboard media keys on Windows."
+license = "MIT"
 
 [dependencies]
-windows = { version = "0.48", default-features = false, features = [
-    "Win32_Foundation",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_System_LibraryLoader"
-] }
+windows = { version = "0.56.0", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse"] }
