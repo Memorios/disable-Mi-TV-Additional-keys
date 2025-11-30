@@ -1,33 +1,7 @@
-## Disable Keys
+## Based on Disable Keys
+Blocks additional commands that Mi-Box (Xiaomi TV) sends when you use mouse left and middle click remotely on TV(Enter with Left click, Menu Key with Middle click)
 
-This program disables specific keys on the Windows operating system. It is useful for gaming or other scenarios where accidental key presses are disruptive.
+### Original project
+Based on [Releases page](https://github.com/nous-/disable-keys/releases/latest).
 
-### Download Here
 
-You can download the latest release from the [Releases page](https://github.com/nous-/disable-keys/releases/latest).
-
-These binaries are provided directly from github by compiling the code from this repo directly.
-
-### Usage
-
-By example:
-
-- disable-keys.exe WIN_L WIN_R: Disables the left and right Windows keys.
-- disable-keys.exe SLEEP f1: Disables the sleep and f1 key
-
-Run `disable-keys.exe --list-keys` to get a list of key names
-
-### Re-enabling Keys
-
-To re-enable the disabled keys, simply terminate the program:
-- Close the terminal window where disable-keys is running
-- Press `Ctrl+C` in the terminal to stop the program
-
-The keys will be automatically re-enabled as soon as the program exits.
-
-### To run yourself
-
-1. [Install rust](https://learn.microsoft.com/en-us/windows/dev-environment/rust/setup)
-1. Navigate to this cloned repo in the terminal
-1. `cargo build --release`
-1. Look in target folder for output. Ie `target/release/disable-keys.exe`
