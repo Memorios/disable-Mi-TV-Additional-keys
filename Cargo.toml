@@ -6,4 +6,3 @@ edition = "2021"
 [dependencies]
 winapi = { version = "0.3", features = ["winuser", "libloaderapi", "handleapi"] }
 kernel32 = "0.5.1"
-anyhow = "1.0"  # Optional: for error handling
