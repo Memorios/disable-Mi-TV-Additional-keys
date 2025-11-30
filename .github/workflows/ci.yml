@@ -1,4 +1,4 @@
-name: Rust CI
+name: Rust CI & Release
 
 on: [push, pull_request]
 
@@ -14,7 +14,10 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         targets: x86_64-pc-windows-msvc
-    - name: Build
+    - name: Build Release
       run: cargo build --verbose --release
-    - name: Run tests (optional)
-      run: cargo test
+    - name: Upload Release Binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: mi-tv-key-blocker.exe
+        path: target/release/disable-mi-tv-additional-keys.exe
