@@ -1,85 +1,76 @@
-use windows::{
-    Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM},
-    Win32::UI::Input::KeyboardAndMouse::*,
-    Win32::UI::WindowsAndMessaging::*,
+// disable_mi_tv_keys — block ENTER and APPS key injection after mouse click
+
+use std::ptr::null_mut;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RETURN, VK_APPS};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    SetWindowsHookExW, UnhookWindowsHookEx, CallNextHookEx,
+    WH_KEYBOARD_LL, WH_MOUSE_LL, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT,
+    WM_KEYDOWN, WM_SYSKEYDOWN,
+    GetMessageW, TranslateMessage, DispatchMessageW, MSG,
+    GetModuleHandleW, DefWindowProcW
 };
 
-unsafe extern "system" fn wnd_proc(
-    _hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    _lparam: LPARAM,
-) -> LRESULT {
-    match msg {
-        WM_INPUT => LRESULT(0),
-
-        WM_APPCOMMAND => {
-            let cmd = GET_APPCOMMAND_LPARAM(_lparam);
-
-            match cmd {
-                APPCOMMAND_BROWSER_BACKWARD |
-                APPCOMMAND_BROWSER_FORWARD |
-                APPCOMMAND_VOLUME_MUTE |
-                APPCOMMAND_VOLUME_DOWN |
-                APPCOMMAND_VOLUME_UP |
-                APPCOMMAND_MEDIA_PLAY_PAUSE |
-                APPCOMMAND_MEDIA_NEXTTRACK |
-                APPCOMMAND_MEDIA_PREVIOUSTRACK => {
-                    println!("Blocked key: {}", cmd);
-                    return LRESULT(1);
-                }
-                _ => {}
-            }
-        }
-
-        WM_DESTROY => {
-            PostQuitMessage(0);
-        }
-
-        _ => {}
-    }
-
-    DefWindowProcW(_hwnd, msg, wparam, _lparam)
+fn now_millis() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
 }
 
 fn main() {
+    let suppress_ms: u64 = 200;
+    let suppress_until = Arc::new(AtomicU64::new(0));
+
+    // Poll thread to detect left or middle mouse down
+    {
+        let suppress = suppress_until.clone();
+        thread::spawn(move || {
+            let mut prev_left = 0i16;
+            let mut prev_mid = 0i16;
+            loop {
+                let left = unsafe { GetAsyncKeyState(VK_LBUTTON as i32) };
+                let mid = unsafe { GetAsyncKeyState(VK_MBUTTON as i32) };
+                if (left & 0x8000 != 0) && (prev_left & 0x8000 == 0) {
+                    suppress.store(now_millis() + suppress_ms, Ordering::Relaxed);
+                }
+                if (mid & 0x8000 != 0) && (prev_mid & 0x8000 == 0) {
+                    suppress.store(now_millis() + suppress_ms, Ordering::Relaxed);
+                }
+                prev_left = left;
+                prev_mid = mid;
+                thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+    }
+
     unsafe {
-        let class_name = w!("DisableMiTVKeysClass");
+        let hinstance = GetModuleHandleW(null_mut());
 
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(wnd_proc),
-            lpszClassName: class_name,
-            ..Default::default()
-        };
+        extern "system" fn keyboard_proc(n_code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+            if n_code >= 0 && (wparam as u32 == WM_KEYDOWN || wparam as u32 == WM_SYSKEYDOWN) {
+                let kb = *(lparam as *const KBDLLHOOKSTRUCT);
+                let vk = kb.vkCode as i32;
+                let until = unsafe { SUPPRESS_UNTIL.load(Ordering::Relaxed) };
+                if now_millis() <= until {
+                    if vk == VK_RETURN as i32 || vk == VK_APPS as i32 {
+                        return 1; // consume
+                    }
+                }
+            }
+            CallNextHookEx(0, n_code, wparam, lparam)
+        }
 
-        RegisterClassW(&wc);
+        static mut SUPPRESS_UNTIL: AtomicU64 = AtomicU64::new(0);
+        SUPPRESS_UNTIL = (*(&*suppress_until));
 
-        let hwnd = CreateWindowExW(
-            Default::default(),
-            class_name,
-            w!("Disable Mi TV Extra Keys"),
-            WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            300,
-            200,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        ShowWindow(hwnd, SW_HIDE);
-
-        let mut msg = MSG::default();
-        while GetMessageW(&mut msg, HWND(0), 0, 0).into() {
+        let _hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), hinstance, 0);
+        let mut msg = MSG { hwnd: 0, message: 0, wParam: 0, lParam: 0, time: 0, pt: Default::default() };
+        while GetMessageW(&mut msg, 0, 0, 0) != 0 {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        UnhookWindowsHookEx(_hook);
     }
-}
-
-/// Extract APPCOMMAND from lparam
-fn GET_APPCOMMAND_LPARAM(lparam: LPARAM) -> i32 {
-    ((lparam.0 >> 16) & !FAPPCOMMAND_MASK.0) as i32
 }
