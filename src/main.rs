@@ -1,102 +1,55 @@
 use std::ptr;
-use winapi::um::winuser::{
-    SetWindowsHookExW, UnhookWindowsHookEx, CallNextHookEx,
-    GetMessageW, TranslateMessage, DispatchMessageW,
-    WH_MOUSE_LL, WH_KEYBOARD_LL, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_KEYDOWN,
-    VK_RETURN, VK_APPS,  // Enter and AppsKey (Menu)
-    KBDLLHOOKSTRUCT, MOUSEHOOKSTRUCT, HOOKPROC,
-    HHOOK, WPARAM, LPARAM, LRESULT, MSG,
-};
-use winapi::um::libloaderapi::GetModuleHandleW;
-use winapi::shared::minwindef::{DWORD, BOOL};
-use winapi::shared::ntdef::NULL;
-use kernel32::GetTickCount;
+use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, WPARAM, LRESULT};
+use windows_sys::Win32::UI::WindowsAndMessaging::*;
+use windows_sys::Win32::System::Threading::GetTickCount;
 
-static mut G_MOUSE_HOOK: HHOOK = NULL as HHOOK;
-static mut G_KBD_HOOK: HHOOK = NULL as HHOOK;
-static mut BLOCK_UNTIL: DWORD = 0;
-const BLOCK_MS: u32 = 400;  // 400ms window for Xiaomi injection
+static mut MOUSE_HOOK: HHOOK = 0;
+static mut KEYBOARD_HOOK: HHOOK = 0;
+static mut BLOCK_UNTIL: u32 = 0;
+const BLOCK_MS: u32 = 400;
+
+unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 {
+        if wparam == WM_LBUTTONDOWN as usize || wparam == WM_MBUTTONDOWN as usize {
+            BLOCK_UNTIL = GetTickCount() + BLOCK_MS;
+        }
+    }
+    CallNextHookEx(MOUSE_HOOK, code, wparam, lparam)
+}
+
+unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 && wparam == WM_KEYDOWN as usize {
+        let info = *(lparam as *const KBDLLHOOKSTRUCT);
+        let now = GetTickCount();
+        if now < BLOCK_UNTIL {
+            if info.vkCode == VK_RETURN || info.vkCode == VK_APPS {
+                return 1; // block fake Enter / Menu
+            }
+        }
+        if info.vkCode == VK_ESCAPE {
+            PostQuitMessage(0);
+        }
+    }
+    CallNextHookEx(KEYBOARD_HOOK, code, wparam, lparam)
+}
 
 fn main() {
     unsafe {
-        let h_instance = GetModuleHandleW(ptr::null_mut());
-        if h_instance.is_null() {
-            panic!("Failed to get module handle");
-        }
+        let instance = GetModuleHandleW(ptr::null());
+        MOUSE_HOOK = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), instance, 0);
+        KEYBOARD_HOOK = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), instance, 0);
 
-        // Install low-level mouse hook
-        let mouse_proc: HOOKPROC = Some(low_level_mouse_proc);
-        let mouse_hook = SetWindowsHookExW(
-            WH_MOUSE_LL as i32,
-            mouse_proc,
-            h_instance,
-            0,
-        );
-        if mouse_hook.is_null() {
-            panic!("Failed to install mouse hook. Run as administrator.");
-        }
-        G_MOUSE_HOOK = mouse_hook;
+        println!("Mi TV fake-key blocker is running!");
+        println!("→ Left-click & middle-click now work cleanly in Moonlight/Artemis");
+        println!("→ Press ESC to quit");
 
-        // Install low-level keyboard hook
-        let kbd_proc: HOOKPROC = Some(low_level_keyboard_proc);
-        let kbd_hook = SetWindowsHookExW(
-            WH_KEYBOARD_LL as i32,
-            kbd_proc,
-            h_instance,
-            0,
-        );
-        if kbd_hook.is_null() {
-            panic!("Failed to install keyboard hook. Run as administrator.");
-        }
-        G_KBD_HOOK = kbd_hook;
-
-        println!("Mi TV Key Blocker running... Press Ctrl+C to exit.");
-        println!("Tip: Run as administrator for hooks to work.");
-
-        let mut msg: MSG = std::mem::zeroed();
-        while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) != 0 {
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, 0 as HWND, 0, 0) != 0 {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
 
-        // Cleanup
-        if !G_MOUSE_HOOK.is_null() {
-            UnhookWindowsHookEx(G_MOUSE_HOOK);
-        }
-        if !G_KBD_HOOK.is_null() {
-            UnhookWindowsHookEx(G_KBD_HOOK);
-        }
+        if MOUSE_HOOK != 0 { UnhookWindowsHookEx(MOUSE_HOOK); }
+        if KEYBOARD_HOOK != 0 { UnhookWindowsHookEx(KEYBOARD_HOOK); }
     }
-}
-
-unsafe extern "system" fn low_level_mouse_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
-    if n_code >= 0 {
-        let _mouse_struct = &*(l_param as *const MOUSEHOOKSTRUCT);
-        match w_param as u32 {
-            WM_LBUTTONDOWN => {
-                BLOCK_UNTIL = GetTickCount() + BLOCK_MS;
-            }
-            WM_MBUTTONDOWN => {
-                BLOCK_UNTIL = GetTickCount() + BLOCK_MS;
-            }
-            _ => {}
-        }
-    }
-    CallNextHookEx(G_MOUSE_HOOK, n_code, w_param, l_param)
-}
-
-unsafe extern "system" fn low_level_keyboard_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
-    if n_code >= 0 && w_param as u32 == WM_KEYDOWN {
-        let kbd_struct = &*(l_param as *const KBDLLHOOKSTRUCT);
-        let vk_code = kbd_struct.vkCode;
-        let now = GetTickCount();
-        if now < BLOCK_UNTIL {
-            match vk_code as u32 {
-                VK_RETURN => return 1,  // Block fake Enter
-                VK_APPS => return 1,    // Block fake Menu/AppsKey
-                _ => {}
-            }
-        }
-    }
-    CallNextHookEx(G_KBD_HOOK, n_code, w_param, l_param)
 }
