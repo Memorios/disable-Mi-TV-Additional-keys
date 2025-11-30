@@ -1,76 +1,89 @@
-// disable_mi_tv_keys — block ENTER and APPS key injection after mouse click
-
-use std::ptr::null_mut;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::thread;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RETURN, VK_APPS};
-use windows_sys::Win32::UI::WindowsAndMessaging::{
+use std::ptr;
+use winapi::um::winuser::{
     SetWindowsHookExW, UnhookWindowsHookEx, CallNextHookEx,
-    WH_KEYBOARD_LL, WH_MOUSE_LL, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT,
-    WM_KEYDOWN, WM_SYSKEYDOWN,
-    GetMessageW, TranslateMessage, DispatchMessageW, MSG,
-    GetModuleHandleW, DefWindowProcW
+    GetMessageW, TranslateMessage, DispatchMessageW,
+    WH_MOUSE_LL, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_KEYDOWN,
+    VK_RETURN, VK_APPS,  // Enter and AppsKey (Menu)
+    KBDLLHOOKSTRUCT, MOUSEHOOKSTRUCT, HOOKPROC,
+    HHOOK, WPARAM, LPARAM, LRESULT, MSG,
 };
+use winapi::um::libloaderapi::GetModuleHandleW;
+use winapi::shared::minwindef::{DWORD, HKL};
+use winapi::shared::ntdef::NULL;
+use kernel32::GetTickCount;
 
-fn now_millis() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+static mut G_HOOK: HHOOK = NULL as HHOOK;
+static mut BLOCK_UNTIL: DWORD = 0;
+const BLOCK_MS: u32 = 400;  // 400ms window for Xiaomi injection
+
+unsafe extern "system" fn low_level_mouse_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
+    if n_code >= 0 {
+        let mouse_struct = &*(l_param as *const MOUSEHOOKSTRUCT);
+        match w_param as u32 {
+            WM_LBUTTONDOWN => {
+                BLOCK_UNTIL = GetTickCount() + BLOCK_MS;
+            }
+            WM_MBUTTONDOWN => {
+                BLOCK_UNTIL = GetTickCount() + BLOCK_MS;
+            }
+            _ => {}
+        }
+    }
+    CallNextHookEx(G_HOOK, n_code, w_param, l_param)
+}
+
+unsafe extern "system" fn low_level_keyboard_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
+    if n_code >= 0 && w_param as u32 == WM_KEYDOWN {
+        let kbd_struct = &*(l_param as *const KBDLLHOOKSTRUCT);
+        let vk_code = kbd_struct.vkCode;
+        let now = GetTickCount();
+        if now < BLOCK_UNTIL {
+            match vk_code as u32 {
+                VK_RETURN => return 1,  // Block fake Enter
+                VK_APPS => return 1,    // Block fake Menu/AppsKey
+                _ => {}
+            }
+        }
+    }
+    CallNextHookEx(G_HOOK, n_code, w_param, l_param)
 }
 
 fn main() {
-    let suppress_ms: u64 = 200;
-    let suppress_until = Arc::new(AtomicU64::new(0));
-
-    // Poll thread to detect left or middle mouse down
-    {
-        let suppress = suppress_until.clone();
-        thread::spawn(move || {
-            let mut prev_left = 0i16;
-            let mut prev_mid = 0i16;
-            loop {
-                let left = unsafe { GetAsyncKeyState(VK_LBUTTON as i32) };
-                let mid = unsafe { GetAsyncKeyState(VK_MBUTTON as i32) };
-                if (left & 0x8000 != 0) && (prev_left & 0x8000 == 0) {
-                    suppress.store(now_millis() + suppress_ms, Ordering::Relaxed);
-                }
-                if (mid & 0x8000 != 0) && (prev_mid & 0x8000 == 0) {
-                    suppress.store(now_millis() + suppress_ms, Ordering::Relaxed);
-                }
-                prev_left = left;
-                prev_mid = mid;
-                thread::sleep(std::time::Duration::from_millis(5));
-            }
-        });
-    }
-
     unsafe {
-        let hinstance = GetModuleHandleW(null_mut());
+        let h_instance = GetModuleHandleW(ptr::null_mut());
+        // Install mouse hook
+        let mouse_proc: HOOKPROC = Some(low_level_mouse_proc);
+        let mouse_hook = SetWindowsHookExW(
+            WH_MOUSE_LL as i32,
+            mouse_proc,
+            h_instance,
+            0,
+        );
+        if mouse_hook.is_null() {
+            panic!("Failed to install mouse hook");
+        }
+        G_HOOK = mouse_hook;
 
-        extern "system" fn keyboard_proc(n_code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-            if n_code >= 0 && (wparam as u32 == WM_KEYDOWN || wparam as u32 == WM_SYSKEYDOWN) {
-                let kb = *(lparam as *const KBDLLHOOKSTRUCT);
-                let vk = kb.vkCode as i32;
-                let until = unsafe { SUPPRESS_UNTIL.load(Ordering::Relaxed) };
-                if now_millis() <= until {
-                    if vk == VK_RETURN as i32 || vk == VK_APPS as i32 {
-                        return 1; // consume
-                    }
-                }
-            }
-            CallNextHookEx(0, n_code, wparam, lparam)
+        // Install keyboard hook (for blocking keys)
+        let kbd_proc: HOOKPROC = Some(low_level_keyboard_proc);
+        let kbd_hook = SetWindowsHookExW(
+            13i32,  // WH_KEYBOARD_LL
+            kbd_proc,
+            h_instance,
+            0,
+        );
+        if kbd_hook.is_null() {
+            panic!("Failed to install keyboard hook");
         }
 
-        static mut SUPPRESS_UNTIL: AtomicU64 = AtomicU64::new(0);
-        SUPPRESS_UNTIL = (*(&*suppress_until));
-
-        let _hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), hinstance, 0);
-        let mut msg = MSG { hwnd: 0, message: 0, wParam: 0, lParam: 0, time: 0, pt: Default::default() };
-        while GetMessageW(&mut msg, 0, 0, 0) != 0 {
+        println!("Mi TV Key Blocker running... Press Ctrl+C to exit.");
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) != 0 {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        UnhookWindowsHookEx(_hook);
+
+        UnhookWindowsHookEx(mouse_hook);
+        UnhookWindowsHookEx(kbd_hook);
     }
 }
